@@ -31,6 +31,7 @@ const ChatBot = () => {
   const [isListening, setIsListening] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'connecting' | 'error'>('connecting');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
   const apiKey = "AIzaSyBrFLoeq6dWCC3qSZpV0q56zwJ5YGS2rVc";
   
   // Add suggested questions
@@ -78,15 +79,33 @@ const ChatBot = () => {
     }
   };
 
+  // Add debug logging for scroll events
+  useEffect(() => {
+    const chatContainer = chatContainerRef.current;
+    if (chatContainer) {
+      const handleScroll = () => {
+        console.log('Scroll position:', chatContainer.scrollTop);
+        console.log('Scroll height:', chatContainer.scrollHeight);
+        console.log('Client height:', chatContainer.clientHeight);
+      };
+      
+      chatContainer.addEventListener('scroll', handleScroll);
+      return () => chatContainer.removeEventListener('scroll', handleScroll);
+    }
+  }, []);
+
+  const scrollToBottom = () => {
+    console.log('Attempting to scroll to bottom');
+    if (chatContainerRef.current) {
+      const container = chatContainerRef.current;
+      container.scrollTop = container.scrollHeight;
+      console.log('Scrolled to:', container.scrollTop);
+    }
+  };
+
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
-
-  const scrollToBottom = () => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
-    }
-  };
 
   const handleSuggestedQuestion = (question: string) => {
     setInput(question);
@@ -111,7 +130,7 @@ const ChatBot = () => {
     ]);
   };
 
-  const isArtRelatedQuery = (query: string): boolean => {
+  const isArtRelatedQuery = (query: string, conversationHistory: Message[]): boolean => {
     const artKeywords = [
       'art', 'painting', 'sculpture', 'artist', 'museum', 'gallery',
       'renaissance', 'impressionism', 'cubism', 'modern art', 'contemporary art',
@@ -122,8 +141,22 @@ const ChatBot = () => {
       'art museum', 'art exhibition', 'art critic', 'art theory', 'art education'
     ];
 
+    // Check current query
     const queryLower = query.toLowerCase();
-    return artKeywords.some(keyword => queryLower.includes(keyword));
+    if (artKeywords.some(keyword => queryLower.includes(keyword))) {
+      return true;
+    }
+
+    // Check conversation history for art-related context
+    const recentMessages = conversationHistory.slice(-4); // Check last 4 messages
+    for (const msg of recentMessages) {
+      const msgLower = msg.content.toLowerCase();
+      if (artKeywords.some(keyword => msgLower.includes(keyword))) {
+        return true;
+      }
+    }
+
+    return false;
   };
 
   const getNonArtResponse = (query: string): string => {
@@ -184,29 +217,43 @@ const ChatBot = () => {
         return getGreetingResponse();
       }
 
-      // Check if the query is art-related
-      if (!isArtRelatedQuery(prompt)) {
+      // Check if the query is art-related using conversation history
+      if (!isArtRelatedQuery(prompt, messages)) {
         return getNonArtResponse(prompt);
       }
 
       // Updated URL with the new model
       const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash-002:generateContent?key=${apiKey}`;
       
+      // Create conversation history from previous messages
+      const conversationHistory = messages
+        .filter(msg => msg.role !== "assistant" || !msg.content.includes("👋 Hello!")) // Exclude welcome message
+        .map(msg => ({
+          role: msg.role,
+          parts: [{ text: msg.content }]
+        }));
+
       const payload = {
         contents: [
+          ...conversationHistory,
           {
             role: "user",
             parts: [
               {
                 text: `You are an AI virtual art history tour guide named ArtSpark.
-                DO NOT introduce yourself or include greetings like "Hello", "Hi there", or "ArtSpark here" in your responses - the user already knows who you are.
+                You are having a conversation about art history. Use the conversation history to maintain context.
+                If the user refers to something mentioned in previous messages, acknowledge and respond accordingly.
+                DO NOT introduce yourself or include greetings like "Hello", "Hi there", or "ArtSpark here" in your responses.
                 Respond to this query in a warm, engaging, and conversational tone.
                 Get straight to answering the question without any introduction.
                 Share interesting and accurate information about art history, artists, 
                 movements, techniques, and artworks. If appropriate, suggest related 
                 artists or works that might interest the user based on their query.
                 
-                User query: ${prompt}`
+                Previous conversation context:
+                ${conversationHistory.map(msg => `${msg.role}: ${msg.parts[0].text}`).join('\n')}
+                
+                Current user query: ${prompt}`
               }
             ]
           }
@@ -256,34 +303,12 @@ const ChatBot = () => {
     }
   };
 
-  const typeMessage = async (message: Message) => {
-    const words = message.content.split(' ');
-    let typedContent = '';
-    
-    for (let i = 0; i < words.length; i++) {
-      typedContent += words[i] + ' ';
-      setMessages(prev => prev.map(msg => 
-        msg.id === message.id 
-          ? { ...msg, content: typedContent, isTyping: i < words.length - 1 }
-          : msg
-      ));
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
-    
-    setMessages(prev => prev.map(msg => 
-      msg.id === message.id 
-        ? { ...msg, isTyping: false }
-        : msg
-    ));
-  };
-
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     
     if (!input.trim()) return;
     
     try {
-      // Add user message
       const userMessage: Message = {
         id: Date.now().toString(),
         content: input,
@@ -291,11 +316,10 @@ const ChatBot = () => {
         timestamp: new Date(),
       };
       
-      setMessages((prev) => [...prev, userMessage]);
+      setMessages(prev => [...prev, userMessage]);
       setInput("");
       setIsLoading(true);
       
-      // Get response from Gemini
       const aiResponse = await fetchGeminiResponse(input);
       
       const assistantMessage: Message = {
@@ -303,11 +327,10 @@ const ChatBot = () => {
         content: typeof aiResponse === 'string' ? aiResponse : aiResponse.text,
         role: "assistant",
         timestamp: new Date(),
-        isTyping: true
       };
       
-      setMessages((prev) => [...prev, assistantMessage]);
-      await typeMessage(assistantMessage);
+      setMessages(prev => [...prev, assistantMessage]);
+      
     } catch (error) {
       console.error("Error in chat flow:", error);
       
@@ -316,11 +339,9 @@ const ChatBot = () => {
         content: "I'm sorry, I encountered an error. Please try again.",
         role: "assistant",
         timestamp: new Date(),
-        isTyping: true
       };
       
-      setMessages((prev) => [...prev, errorMessage]);
-      await typeMessage(errorMessage);
+      setMessages(prev => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
     }
@@ -383,63 +404,60 @@ const ChatBot = () => {
       )}
       
       {/* Chat Area */}
-      <ScrollArea className="flex-1 p-4 overflow-y-auto bg-[#f0f2f5]" style={{ height: "calc(100% - 180px)" }}>
-        <div className="space-y-4">
-          <AnimatePresence>
-            {messages.map((message) => (
-              <motion.div
-                key={message.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-                className={`flex ${
-                  message.role === "assistant" ? "justify-start" : "justify-end"
+      <div 
+        ref={chatContainerRef}
+        className="flex-1 overflow-y-auto bg-[#f0f2f5]"
+        style={{ 
+          height: "calc(100vh - 180px)",
+          overflowY: "auto",
+          WebkitOverflowScrolling: "touch",
+          position: "relative"
+        }}
+      >
+        <div className="p-4 space-y-4">
+          {messages.map((message) => (
+            <div
+              key={message.id}
+              className={`flex ${
+                message.role === "assistant" ? "justify-start" : "justify-end"
+              }`}
+            >
+              <div
+                className={`rounded-2xl px-4 py-3 max-w-[80%] ${
+                  message.role === "assistant"
+                    ? "bg-white text-gray-800 rounded-tl-none"
+                    : "bg-art-burgundy text-white rounded-tr-none"
                 }`}
               >
-                <div
-                  className={`rounded-2xl px-4 py-3 max-w-[80%] ${
-                    message.role === "assistant"
-                      ? "bg-white text-gray-800 rounded-tl-none"
-                      : "bg-art-burgundy text-white rounded-tr-none"
-                  }`}
-                >
-                  {message.role === "assistant" ? (
-                    <div className="text-sm whitespace-pre-line">
-                      <MarkdownFormatter content={message.content} />
-                      {message.isTyping && (
-                        <span className="inline-block w-2 h-4 bg-gray-400 animate-pulse ml-1" />
-                      )}
-                    </div>
-                  ) : (
-                    <p className="text-sm">{message.content}</p>
-                  )}
-                  <p className="text-[10px] text-right mt-1 opacity-70">
-                    {message.timestamp.toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </p>
-                </div>
-              </motion.div>
-            ))}
-          </AnimatePresence>
+                {message.role === "assistant" ? (
+                  <div className="text-sm whitespace-pre-line">
+                    <MarkdownFormatter content={message.content} />
+                  </div>
+                ) : (
+                  <p className="text-sm">{message.content}</p>
+                )}
+                <p className="text-[10px] text-right mt-1 opacity-70">
+                  {message.timestamp.toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </p>
+              </div>
+            </div>
+          ))}
           {isLoading && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="flex justify-start"
-            >
+            <div className="flex justify-start">
               <div className="rounded-2xl px-4 py-2 bg-white rounded-tl-none">
                 <div className="flex items-center gap-2">
                   <Loader2 className="h-4 w-4 animate-spin text-art-burgundy" />
                   <p className="text-sm text-gray-600">Typing...</p>
                 </div>
               </div>
-            </motion.div>
+            </div>
           )}
-          <div ref={messagesEndRef} />
+          <div ref={messagesEndRef} className="h-4" />
         </div>
-      </ScrollArea>
+      </div>
       
       {/* Input Area */}
       <div className="p-4 bg-white border-t">
