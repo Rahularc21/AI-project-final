@@ -32,7 +32,7 @@ const ChatBot = () => {
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'connecting' | 'error'>('connecting');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
-  const apiKey = "AIzaSyBrFLoeq6dWCC3qSZpV0q56zwJ5YGS2rVc";
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "AIzaSyBrFLoeq6dWCC3qSZpV0q56zwJ5YGS2rVc";
   
   // Add suggested questions
   const suggestedQuestions = [
